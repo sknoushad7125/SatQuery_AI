@@ -1,0 +1,12 @@
+{
+  "training_dataset": "Simulated SEN12MS (Prototype)",
+  "classes": [
+    "built-up area",
+    "water body",
+    "vegetation",
+    "bare land"
+  ],
+  "training_date": "2026-08-28T11:35:30Z",
+  "model_version": "1.0.0",
+  "validation_accuracy": 0.3125
+}
