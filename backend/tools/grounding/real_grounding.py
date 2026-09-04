@@ -24,15 +24,15 @@ class RealGroundingTool(RemoteSensingTool):
             print("Loading OWL-ViT for Grounding...")
             from transformers import OwlViTProcessor, OwlViTForObjectDetection
             from peft import PeftModel
-            
+
             self.processor = OwlViTProcessor.from_pretrained("google/owlvit-base-patch32")
             base_model = OwlViTForObjectDetection.from_pretrained("google/owlvit-base-patch32").to(self.device)
-            
+
             # ATTEMPT TO LOAD RS-ADAPTED WEIGHTS (VRSBench LoRA)
             lora_path = "/app/training/checkpoints/vrsbench_lora"
             if not os.path.exists(lora_path):
                 lora_path = os.path.join(os.getcwd(), "training", "checkpoints", "vrsbench_lora")
-            
+
             if os.path.exists(lora_path):
                 print(f"Loading VRSBench-adapted weights from {lora_path}")
                 try:
@@ -44,7 +44,7 @@ class RealGroundingTool(RemoteSensingTool):
             else:
                 print("VRSBench-adapted weights not found. Using zero-shot base model.")
                 self.model = base_model
-                
+
             self.model.eval()
 
     def validate(self, images: List[ImageMetadata], query: str) -> bool:
@@ -54,26 +54,26 @@ class RealGroundingTool(RemoteSensingTool):
     def run(self, images: List[str], query: str, **kwargs) -> ToolResult:
         start_time = time.time()
         self._load_model()
-        
+
         try:
             raw_image = Image.open(images[0]).convert('RGB')
-            
+
             target_obj = query.lower().replace("highlight the", "").replace("locate the", "").replace("find the", "").replace("highlight", "").strip()
             if not target_obj: target_obj = "object"
-                
+
             texts = [[f"a photo of a {target_obj}"]]
             inputs = self.processor(text=texts, images=raw_image, return_tensors="pt").to(self.device)
-            
+
             with torch.no_grad():
                 outputs = self.model(**inputs)
-                
+
             target_sizes = torch.Tensor([raw_image.size[::-1]]).to(self.device)
             results = self.processor.post_process_object_detection(outputs=outputs, target_sizes=target_sizes, threshold=0.1)
-            
+
             i = 0
             text_labels = texts[i]
             boxes, scores, labels = results[i]["boxes"], results[i]["scores"], results[i]["labels"]
-            
+
             detected = []
             max_score = 0.0
             for box, score, label in zip(boxes, scores, labels):
@@ -81,7 +81,7 @@ class RealGroundingTool(RemoteSensingTool):
                 score = round(score.item(), 3)
                 if score > max_score: max_score = score
                 detected.append({"box": box, "score": score, "label": text_labels[label.item()]})
-                
+
             detected = sorted(detected, key=lambda x: x["score"], reverse=True)[:3]
 
             if not detected:

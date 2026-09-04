@@ -16,7 +16,7 @@ def validate_temporal_pair(img1: ImageMetadata, img2: ImageMetadata) -> bool:
     else:
         if img1.width != img2.width or img1.height != img2.height:
             errors.append("Images are not georeferenced and have different dimensions.")
-            
+
     if errors:
         raise ValidationError(" | ".join(errors))
     return True

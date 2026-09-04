@@ -20,7 +20,7 @@ class ImageMetadata(BaseModel):
 class AnalysisInput(BaseModel):
     input_type: Literal["single", "optical_sar_pair", "temporal_pair"]
     images: List[ImageMetadata]
-    
+
 class AnalysisQuery(BaseModel):
     text: str
 
@@ -28,6 +28,7 @@ class AnalysisTask(BaseModel):
     task_type: Literal[
         "single_vqa",
         "captioning",
+        "single_sar_classification",
         "grounding",
         "bi_temporal_change",
         "change_vqa",

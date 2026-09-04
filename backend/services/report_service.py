@@ -12,8 +12,8 @@ class ReportService:
         report += f"## Result\n{trace.final_result}\n\n"
         report += f"**Confidence:** {trace.final_confidence}\n\n"
         report += f"## Execution Trace\n"
-        
+
         for step in trace.steps:
             report += f"- **{step.step_name}** ({step.status}): {step.description}\n"
-            
+
         return report

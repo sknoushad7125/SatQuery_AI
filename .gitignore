@@ -53,3 +53,28 @@ datasets/ROIs1158_spring/
 # Runtime / experiment artifacts
 *.log
 *.pid
+# Large generated dataset manifests
+training_data/manifests/bigearthnet_*.jsonl
+
+# Local datasets
+datasets/
+
+# Generated training artifacts
+training_data/reports/
+.venv/
+datasets/
+frontend/node_modules/
+training/checkpoints/
+
+# Generated BigEarthNet manifests are too large for GitHub
+training_data/manifests/bigearthnet_*.jsonl
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local database
+*.db
+
+# Temporary reports/build output
+report_build/

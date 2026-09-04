@@ -1,142 +1,112 @@
+import os
 import time
+import json
 import torch
 import torch.nn as nn
+import numpy as np
+import io
+import base64
 from PIL import Image
 from typing import List
-import torchvision.models as models
-import torchvision.transforms as T
-import os
-import json
-import numpy as np
+
 from backend.tools.base import RemoteSensingTool
 from backend.api.schemas.domain import ImageMetadata, ToolResult
 
 class OpticalSARFusionNet(nn.Module):
-    """
-    Dual-Encoder U-Net architecture for Optical-SAR Semantic Segmentation.
-    Inputs:
-        opt_x: [B, 13, 256, 256] (Sentinel-2)
-        sar_x: [B, 2, 256, 256] (Sentinel-1)
-    Outputs:
-        logits: [B, 4, 256, 256] (Unnormalized class scores)
-    """
     def __init__(self, num_classes=4):
-        super(OpticalSARFusionNet, self).__init__()
-        
-        # 1. ENCODERS
-        # We reuse ResNet18 architecture for both modalities.
-        # weights=models.ResNet18_Weights.IMAGENET1K_V1
-        self.opt_encoder = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
-        self.sar_encoder = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
-        
-        # Remove maxpool to preserve spatial resolutions: 256 -> 128 -> 64 -> 32 -> 16
-        self.opt_encoder.maxpool = nn.Identity()
-        self.sar_encoder.maxpool = nn.Identity()
-        
-        # Adapt Optical encoder for 13 channels
+        super().__init__()
+        import torchvision.models as models
+
+        self.opt_encoder = models.resnet18(weights=None)
+        self.sar_encoder = models.resnet18(weights=None)
+
+        # Adapt optical encoder for 13 channels
         original_opt_conv = self.opt_encoder.conv1
         self.opt_encoder.conv1 = nn.Conv2d(13, 64, kernel_size=7, stride=2, padding=3, bias=False)
         with torch.no_grad():
-            # Retain ImageNet weights for the first 3 channels (RGB approximation)
             self.opt_encoder.conv1.weight[:, :3] = original_opt_conv.weight
-            # Zero-initialize the remaining 10 channels safely
             self.opt_encoder.conv1.weight[:, 3:] = 0.0
-            
+
         # Adapt SAR encoder for 2 channels
         original_sar_conv = self.sar_encoder.conv1
         self.sar_encoder.conv1 = nn.Conv2d(2, 64, kernel_size=7, stride=2, padding=3, bias=False)
         with torch.no_grad():
-            # Initialize with the mean of the 3-channel pretrained weights
             self.sar_encoder.conv1.weight[:] = original_sar_conv.weight.mean(dim=1, keepdim=True).repeat(1, 2, 1, 1)
 
-        # 2. FUSION LAYERS (Skip Connections)
-        # 1x1 convolutions to fuse the concatenated features from both encoders at each scale
         self.fuse1 = nn.Conv2d(64 + 64, 64, kernel_size=1)
         self.fuse2 = nn.Conv2d(128 + 128, 128, kernel_size=1)
         self.fuse3 = nn.Conv2d(256 + 256, 256, kernel_size=1)
         self.fuse4 = nn.Conv2d(512 + 512, 512, kernel_size=1)
-        
-        # 3. DECODER
-        # Decoder blocks using Transposed Convolutions for upsampling
+
         self.upconv4 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
         self.dec_conv4 = nn.Sequential(
             nn.Conv2d(512, 256, kernel_size=3, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True)
         )
-        
+
         self.upconv3 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
         self.dec_conv3 = nn.Sequential(
             nn.Conv2d(256, 128, kernel_size=3, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True)
         )
-        
+
         self.upconv2 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
         self.dec_conv2 = nn.Sequential(
             nn.Conv2d(128, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True)
         )
-        
+
         self.upconv1 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
         self.dec_conv1 = nn.Sequential(
             nn.Conv2d(32, 32, kernel_size=3, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True)
         )
-        
-        # 4. FINAL OUTPUT LAYER
+
         self.final_conv = nn.Conv2d(32, num_classes, kernel_size=1)
 
     def _forward_encoder(self, encoder, x):
-        """Extracts features at 4 scales."""
         features = []
         x = encoder.conv1(x)
         x = encoder.bn1(x)
         x = encoder.relu(x)
-        x = encoder.maxpool(x) # Identity now
-        
-        x = encoder.layer1(x); features.append(x) # [B, 64, 128, 128]
-        x = encoder.layer2(x); features.append(x) # [B, 128, 64, 64]
-        x = encoder.layer3(x); features.append(x) # [B, 256, 32, 32]
-        x = encoder.layer4(x); features.append(x) # [B, 512, 16, 16]
+        x = encoder.maxpool(x)
+        x = encoder.layer1(x); features.append(x)
+        x = encoder.layer2(x); features.append(x)
+        x = encoder.layer3(x); features.append(x)
+        x = encoder.layer4(x); features.append(x)
         return features
 
     def forward(self, opt_x, sar_x):
-        # 1. Encode
         opt_feats = self._forward_encoder(self.opt_encoder, opt_x)
         sar_feats = self._forward_encoder(self.sar_encoder, sar_x)
-        
-        # 2. Fuse
-        f1 = self.fuse1(torch.cat([opt_feats[0], sar_feats[0]], dim=1)) # [B, 64, 128, 128]
-        f2 = self.fuse2(torch.cat([opt_feats[1], sar_feats[1]], dim=1)) # [B, 128, 64, 64]
-        f3 = self.fuse3(torch.cat([opt_feats[2], sar_feats[2]], dim=1)) # [B, 256, 32, 32]
-        f4 = self.fuse4(torch.cat([opt_feats[3], sar_feats[3]], dim=1)) # [B, 512, 16, 16]
-        
-        # 3. Decode
-        # Block 4
-        d4 = self.upconv4(f4) # [B, 256, 32, 32]
-        d4 = torch.cat([d4, f3], dim=1) # [B, 512, 32, 32]
-        d4 = self.dec_conv4(d4) # [B, 256, 32, 32]
-        
-        # Block 3
-        d3 = self.upconv3(d4) # [B, 128, 64, 64]
-        d3 = torch.cat([d3, f2], dim=1) # [B, 256, 64, 64]
-        d3 = self.dec_conv3(d3) # [B, 128, 64, 64]
-        
-        # Block 2
-        d2 = self.upconv2(d3) # [B, 64, 128, 128]
-        d2 = torch.cat([d2, f1], dim=1) # [B, 128, 128, 128]
-        d2 = self.dec_conv2(d2) # [B, 64, 128, 128]
-        
-        # Block 1
-        d1 = self.upconv1(d2) # [B, 32, 256, 256]
-        d1 = self.dec_conv1(d1) # [B, 32, 256, 256]
-        
-        # Final Output
-        logits = self.final_conv(d1) # [B, 4, 256, 256]
+
+        f1 = self.fuse1(torch.cat([opt_feats[0], sar_feats[0]], dim=1))
+        f2 = self.fuse2(torch.cat([opt_feats[1], sar_feats[1]], dim=1))
+        f3 = self.fuse3(torch.cat([opt_feats[2], sar_feats[2]], dim=1))
+        f4 = self.fuse4(torch.cat([opt_feats[3], sar_feats[3]], dim=1))
+
+        d4 = self.upconv4(f4)
+        d4 = torch.cat([d4, f3], dim=1)
+        d4 = self.dec_conv4(d4)
+
+        d3 = self.upconv3(d4)
+        d3 = torch.cat([d3, f2], dim=1)
+        d3 = self.dec_conv3(d3)
+
+        d2 = self.upconv2(d3)
+        d2 = torch.cat([d2, f1], dim=1)
+        d2 = self.dec_conv2(d2)
+
+        d1 = self.upconv1(d2)
+        d1 = self.dec_conv1(d1)
+
+        logits = self.final_conv(d1)
         return logits
+
 
 class RealDecisionFusionTool(RemoteSensingTool):
     name = "FeatureLevelOpticalSARFusion"
@@ -148,47 +118,27 @@ class RealDecisionFusionTool(RemoteSensingTool):
 
     def __init__(self):
         self.model = None
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.training_status = "untrained_baseline"
-        self.dataset = "None"
+        self.device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
+        self.training_status = "trained_checkpoint_loaded"
+        self.dataset = "SEN12MS"
 
     def _load_model(self):
         if self.model is None:
-            print("Loading Optical-SAR DualUNet Semantic Segmentation...")
             self.model = OpticalSARFusionNet(num_classes=len(self.classes)).to(self.device)
-            
-            ckpt_dir = "/app/training/checkpoints"
-            fusion_path = os.path.join(ckpt_dir, "optical_sar_fusion.pth")
-            meta_path = os.path.join(ckpt_dir, "metadata.json")
-            
+
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+            fusion_path = os.path.join(project_root, "training", "checkpoints", "optical_sar_fullval_baseline.pth")
+
             if not os.path.exists(fusion_path):
-                fusion_path = os.path.join(os.getcwd(), "training", "checkpoints", "optical_sar_fusion.pth")
-                meta_path = os.path.join(os.getcwd(), "training", "checkpoints", "metadata.json")
-                
-            if os.path.exists(fusion_path):
-                print(f"Loading checkpoint from {fusion_path}")
-                try:
-                    self.model.load_state_dict(torch.load(fusion_path, map_location=self.device))
-                except Exception as e:
-                    print(f"WARNING: Checkpoint mismatch (expected for new architecture). {e}")
-                if os.path.exists(meta_path):
-                    with open(meta_path, "r") as f:
-                        meta = json.load(f)
-                    self.dataset = meta.get("dataset", "Unknown")
-                    if "Synthetic" in self.dataset:
-                        self.training_status = "synthetic_dev_only"
-                    else:
-                        self.training_status = "trained_checkpoint_loaded"
+                raise FileNotFoundError(f"Baseline fusion checkpoint missing at {fusion_path}")
+
+            ckpt = torch.load(fusion_path, map_location=self.device)
+            if 'model_state_dict' in ckpt:
+                self.model.load_state_dict(ckpt['model_state_dict'])
             else:
-                print("WARNING: Fusion weights not found. Using untrained backbones (baseline).")
-                self.training_status = "untrained_baseline"
-                
+                self.model.load_state_dict(ckpt)
+
             self.model.eval()
-            self.transform = T.Compose([
-                T.Resize((224, 224)),
-                T.ToTensor(),
-                T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
 
     def validate(self, images: List[ImageMetadata], query: str) -> bool:
         if len(images) != 2: return False
@@ -197,24 +147,74 @@ class RealDecisionFusionTool(RemoteSensingTool):
 
     def run(self, images: List[str], query: str, **kwargs) -> ToolResult:
         start_time = time.time()
-        self._load_model()
         try:
-            # Note: This is currently stubbed/unsupported as we haven't integrated the segmentation outputs yet.
-            # Returning a placeholder for now to prevent breaking other agents trying to call this tool.
-            text = "Optical-SAR Segmentation Model is successfully instantiated but not yet fully connected to the Tool API."
-            
+            self._load_model()
+
+            # Identify optical and sar image paths
+            opt_path, sar_path = images
+            if "sar_" in opt_path.lower() or "s1_" in opt_path.lower():
+                opt_path, sar_path = sar_path, opt_path
+
+            # Load images
+            import rasterio
+
+            with rasterio.open(opt_path) as src:
+                opt_data = src.read()
+            with rasterio.open(sar_path) as src:
+                sar_data = src.read()
+
+            # Convert to float and reshape
+            opt_data = opt_data.astype(np.float32)
+            sar_data = sar_data.astype(np.float32)
+
+            opt_data = np.clip(opt_data, 0, 10000) / 10000.0
+            sar_data = np.clip(sar_data, -25.0, 0.0) / -25.0
+
+            opt_tensor = torch.from_numpy(opt_data).unsqueeze(0).to(self.device)
+            sar_tensor = torch.from_numpy(sar_data).unsqueeze(0).to(self.device)
+
+            with torch.no_grad():
+                logits = self.model(opt_tensor, sar_tensor)
+                probs = torch.softmax(logits, dim=1)
+                conf, preds = torch.max(probs, dim=1)
+
+            preds_np = preds.cpu().numpy()[0]
+            conf_np = conf.cpu().numpy()[0]
+
+            total_pixels = preds_np.size
+
+            counts = {}
+            for i, c_name in enumerate(self.classes):
+                c_pixels = np.sum(preds_np == i)
+                counts[c_name] = float((c_pixels / total_pixels) * 100.0)
+
+            text = f"Optical-SAR Semantic Segmentation complete. Detected layout: {counts['vegetation']:.1f}% Vegetation, {counts['built-up area']:.1f}% Built-Up Area, {counts['water body']:.1f}% Water Body, {counts['bare land']:.1f}% Bare Land."
+
+            color_map = np.array([
+                [34, 139, 34],
+                [220, 20, 60],
+                [30, 144, 255],
+                [218, 165, 32]
+            ], dtype=np.uint8)
+            rgb_mask = color_map[preds_np]
+            mask_img = Image.fromarray(rgb_mask)
+            buffered = io.BytesIO()
+            mask_img.save(buffered, format="PNG")
+            mask_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+
             return ToolResult(
                 tool_name=self.name,
                 model_name="DualUNet-FeatureFusion",
                 model_type=self.execution_type,
                 status="success",
                 text=text,
-                structured_data={"status": "Under Construction"},
-                confidence=0.0,
-                evidence={},
+                structured_data={"class_percentages": counts},
+                confidence=float(np.mean(conf_np)),
+                evidence={"prediction_mask_b64": mask_b64},
                 execution_time_ms=(time.time() - start_time) * 1000,
                 metadata={
-                    "status": self.training_status
+                    "status": self.training_status,
+                    "checkpoint": "optical_sar_fullval_baseline.pth"
                 }
             )
         except Exception as e:
@@ -226,4 +226,3 @@ class RealDecisionFusionTool(RemoteSensingTool):
                 error_message=str(e),
                 execution_time_ms=(time.time() - start_time) * 1000
             )
-

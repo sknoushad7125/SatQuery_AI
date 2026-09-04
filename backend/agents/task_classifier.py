@@ -34,15 +34,15 @@ Respond with ONLY a JSON object containing "task_type" and "reason".
                 response = response[7:-3]
             elif response.startswith("```"):
                 response = response[3:-3]
-                
+
             data = json.loads(response.strip())
             task_type = data.get("task_type", "unsupported")
-            
+
             # Validation safeguard
             valid_tasks = ["single_vqa", "captioning", "grounding", "bi_temporal_change", "change_vqa", "optical_sar_analysis", "multi_tool"]
             if task_type not in valid_tasks:
                 task_type = "unsupported"
-                
+
             return AnalysisTask(task_type=task_type)
         except Exception as e:
             print(f"LLM Classification failed: {e}. Falling back to default.")

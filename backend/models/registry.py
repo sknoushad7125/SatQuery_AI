@@ -19,14 +19,14 @@ registry = ModelRegistry()
 
 def initialize_registry():
     use_mocks = os.environ.get("USE_MOCK_MODELS", "false").lower() == "true"
-    
+
     if use_mocks:
         print("WARNING: Loading MOCK tools for development mode.")
         from backend.tools.vqa.mock_vqa import MockVQATool
         from backend.tools.grounding.mock_grounding import MockGroundingTool
         from backend.tools.change.mock_change import MockChangeTool
         from backend.tools.optical_sar.mock_fusion import MockOpticalSARTool
-        
+
         registry.register(MockVQATool())
         registry.register(MockGroundingTool())
         registry.register(MockChangeTool())
@@ -38,11 +38,11 @@ def initialize_registry():
         from backend.tools.change.real_change import RealSemanticChangeTool
         from backend.tools.optical_sar.real_fusion import RealDecisionFusionTool
         from backend.tools.classification.real_bigearthnet import RealBigEarthNetTool
-        
+
         registry.register(RealVQATool())
         registry.register(RealGroundingTool())
         registry.register(RealSemanticChangeTool())
         registry.register(RealDecisionFusionTool())
         registry.register(RealBigEarthNetTool())
-        
+
 initialize_registry()

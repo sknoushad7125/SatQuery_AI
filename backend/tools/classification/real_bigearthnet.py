@@ -37,7 +37,7 @@ class RealBigEarthNetTool(RemoteSensingTool):
             print("Loading Base ViT for BigEarthNet...")
             base_model_name = "google/vit-base-patch16-224-in21k"
             self.processor = AutoImageProcessor.from_pretrained(base_model_name)
-            
+
             # Create a model with the right number of labels
             base_model = AutoModelForImageClassification.from_pretrained(
                 base_model_name,
@@ -49,7 +49,7 @@ class RealBigEarthNetTool(RemoteSensingTool):
             # Fallback for local testing
             if not os.path.exists(lora_path):
                 lora_path = os.path.join(os.getcwd(), "training", "checkpoints", "bigearthnet_lora")
-                
+
             if os.path.exists(lora_path):
                 print(f"Loading LoRA adapted weights from {lora_path}")
                 try:
@@ -60,7 +60,7 @@ class RealBigEarthNetTool(RemoteSensingTool):
             else:
                 print("No LoRA weights found. Using base model (Classification will be random until trained).")
                 self.model = base_model
-                
+
             self.model.eval()
 
     def validate(self, images: List[ImageMetadata], query: str) -> bool:
@@ -71,26 +71,26 @@ class RealBigEarthNetTool(RemoteSensingTool):
     def run(self, images: List[str], query: str, **kwargs) -> ToolResult:
         start_time = time.time()
         self._load_model()
-        
+
         try:
             raw_image = Image.open(images[0]).convert('RGB')
             inputs = self.processor(raw_image, return_tensors="pt").to(self.device)
-            
+
             with torch.no_grad():
                 outputs = self.model(**inputs)
                 logits = outputs.logits
                 probs = torch.sigmoid(logits)[0].cpu().numpy()
-            
+
             # Get classes with probability > 0.5 (or top 3 if none)
             predicted_indices = np.where(probs > 0.5)[0]
             if len(predicted_indices) == 0:
                 predicted_indices = np.argsort(probs)[-3:]
-                
+
             predicted_classes = [BIGEARTHNET_LABELS[i] for i in predicted_indices if i < len(BIGEARTHNET_LABELS)]
             avg_conf = float(np.mean(probs[predicted_indices])) if len(predicted_indices) > 0 else 0.0
-            
+
             text = f"Scene classified using BigEarthNet classes. Dominant land-cover: {', '.join(predicted_classes)}."
-            
+
             return ToolResult(
                 tool_name=self.name,
                 model_name="ViT-LoRA-BigEarthNet",

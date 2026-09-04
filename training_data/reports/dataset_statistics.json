@@ -1,0 +1,23 @@
+{
+  "total_records": 7420465,
+  "by_dataset": {
+    "vrsbench": 194585,
+    "rsvqa": 57223,
+    "bigearthnet_txt": 7128971,
+    "cdvqa": 39686
+  },
+  "by_task": {
+    "captioning": 376823,
+    "vqa": 5326040,
+    "grounding": 1677916,
+    "change_vqa": 39686
+  },
+  "by_split": {
+    "val": 62918,
+    "internal_val": 5703,
+    "train": 4897154,
+    "validation": 2454690
+  },
+  "unique_images": 30184,
+  "change_vqa_count": 39686
+}

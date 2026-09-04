@@ -1,0 +1,10 @@
+{
+  "change_vqa_val.jsonl": 4058,
+  "grounding_val.jsonl": 16159,
+  "vqa_val.jsonl": 43112,
+  "grounding_train.jsonl": 25590,
+  "caption_train.jsonl": 20264,
+  "caption_val.jsonl": 9350,
+  "change_vqa_train.jsonl": 30000,
+  "vqa_train.jsonl": 137333
+}
